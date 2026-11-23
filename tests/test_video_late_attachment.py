@@ -90,6 +90,36 @@ def cases(source):
     return result
 
 
+def steal_old_turn(source):
+    """A leftover video from the previous agent turn must not be delivered."""
+    scope = load_waiter(source)
+    clock = SimpleNamespace(now=0.0)
+
+    def sleep(seconds):
+        clock.now += seconds
+
+    scope["time"] = SimpleNamespace(time=lambda: clock.now, sleep=sleep)
+    waiter = scope["Waiter"]()
+    waiter.page = SimpleNamespace(js=lambda _script: json.dumps({
+        "cnt": 2, "txt": "video ready", "tail": "video ready", "stop": False, "path": "/thread/fixture",
+    }))
+    waiter._scroll_bottom = lambda: None
+    old = {"tid": "hatch-chat-attachment-presentation-video", "src": "blob:old",
+           "vSrc": "blob:old", "hasVideo": True, "w": 720, "h": 1280, "agentIdx": 1}
+    new = {"tid": "hatch-chat-attachment-presentation-video", "src": "blob:new",
+           "vSrc": "blob:new", "hasVideo": True, "w": 720, "h": 1280, "agentIdx": 2}
+
+    def attachments():
+        # Old clip is listed last (DOM order / remount). Waiter must still pick the new turn.
+        if clock.now >= 20:
+            return [new, old]
+        return [old]
+
+    waiter.attachments = attachments
+    result = waiter._wait_attachment("blob:stale", 90, "video", base_agent_cnt=1)
+    return result
+
+
 def main():
     if len(sys.argv) == 3 and sys.argv[1] == "--probe":
         print(json.dumps(cases(sys.argv[2]), ensure_ascii=False, sort_keys=True))
@@ -107,8 +137,11 @@ def main():
         else:
             assert item["outcome"] == "MuseModelRefusalError", (name, item)
             assert item["elapsed"] < 25, (name, item)
+    stolen = steal_old_turn(source)
+    assert stolen and stolen.get("vSrc") == "blob:new", stolen
     print(json.dumps(result, ensure_ascii=False, sort_keys=True))
     print(f"PASS: {len(result)} late-video, deadline, cover and refusal cases")
+    print("PASS: leftover video from previous agent turn is ignored")
 
 
 if __name__ == "__main__":

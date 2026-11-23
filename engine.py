@@ -296,6 +296,9 @@ def _open_public_ref_image(url: str):
 
 
 class MuseEngine:
+    _gen_locks: dict = {}
+    _gen_locks_guard = threading.Lock()
+
     def __init__(self, cfg):
         self.cfg = cfg
         self.proc: subprocess.Popen | None = None
@@ -310,6 +313,17 @@ class MuseEngine:
         self._last_http_renew: dict[str, float] = {}
         self._log = None
         os.makedirs(cfg.profile_dir, exist_ok=True)
+
+    def _account_gen_lock(self, account_id: str | None, cookies: dict | None = None) -> threading.Lock:
+        """One in-flight generate per Muse session so two lanes cannot steal each other's video."""
+        sess = str((cookies or {}).get("hatch_sess") or "")[:48]
+        key = (getattr(self.cfg, "cdp_port", 0), account_id or "", sess)
+        with MuseEngine._gen_locks_guard:
+            lock = MuseEngine._gen_locks.get(key)
+            if lock is None:
+                lock = threading.Lock()
+                MuseEngine._gen_locks[key] = lock
+            return lock
 
     def _ensure_local(self):
         local = getattr(self, "_local", None)
@@ -562,7 +576,7 @@ class MuseEngine:
             if proxy and r.status_code == 407:
                 raise MuseProxyError("账号代理认证失败 (HTTP 407)，请检查代理用户名和密码")
             if r.status_code == 401:
-                raise MuseAuthError("会话认证失败 (/api/session HTTP 401)，请在官网确认登录后重新导入 cookie")
+                raise MuseAuthError("Phiên đăng nhập hết hạn (HTTP 401). Hãy nhập lại cookie ở tab Tài khoản.")
             if r.status_code != 200:
                 hint = ("访问被拒绝，请检查服务器出口/地区/访问限制；不能据此判定 Cookie 失效"
                         if r.status_code == 403 else "上游请求未成功，请稍后重试并检查服务器网络")
@@ -971,6 +985,16 @@ class MuseEngine:
     _ATT_JS = (
         "(function(){"
         "var list = []; var seen = new Set();"
+        "function agentIdxOf(el){"
+        "  var n=0;"
+        "  var bs=document.querySelectorAll('div[class*=\"hatch-chat-groupable-bubble\"]');"
+        "  for(var i=0;i<bs.length;i++){"
+        "    if(!/hatch-agent-bubble-bg/.test(bs[i].className||'')) continue;"
+        "    n++;"
+        "    if(bs[i].contains(el)) return n;"
+        "  }"
+        "  return 0;"
+        "}"
         "function addEl(el, tid){"
         "  if(!el || seen.has(el)) return;"
         "  seen.add(el);"
@@ -989,6 +1013,7 @@ class MuseEngine:
         "      src: src,"
         "      vSrc: v ? (v.currentSrc || v.src || '') : '',"
         "      iSrc: img ? (img.currentSrc || img.src || '') : '',"
+        "      agentIdx: agentIdxOf(el),"
         "      w: primary ? (primary.videoWidth || primary.naturalWidth || 0) : 0,"
         "      h: primary ? (primary.videoHeight || primary.naturalHeight || 0) : 0"
         "    });"
@@ -1179,11 +1204,13 @@ class MuseEngine:
             atts = self.attachments()
             # 严格按期望类型挑选附件，绝不接受跨模态兜底（如将视频请求降级为图片封面）
             matching_atts = []
+            this_turn = []
             for a in atts:
                 tid = (a.get("tid") or "").lower()
                 has_video = bool(a.get("hasVideo"))
                 src = a.get("src") or ""
                 v_src = a.get("vSrc") or ""
+                agent_idx = int(a.get("agentIdx") or 0)
                 if expect == "video":
                     # tid 含 "video" 不足以命中：muse 会先把 data-testid 标成
                     # ...-presentation-video，此时 <video> 可能尚未挂上，_ATT_JS 的
@@ -1196,8 +1223,17 @@ class MuseEngine:
                     )
                 else:
                     is_match = ("image" in tid) or (not has_video and not src.endswith((".mp4", ".webm", ".mov")))
-                if is_match:
-                    matching_atts.append(a)
+                if not is_match:
+                    continue
+                # Video from an earlier agent turn on a reused thread must not
+                # be delivered as this prompt's result (blob URLs remount).
+                if agent_idx and agent_idx <= base_agent_cnt:
+                    continue
+                matching_atts.append(a)
+                if agent_idx > base_agent_cnt:
+                    this_turn.append(a)
+            if this_turn:
+                matching_atts = this_turn
 
             att = matching_atts[-1] if matching_atts else None
             if att:
@@ -1688,7 +1724,7 @@ class MuseEngine:
                 "(function(){"
                 "var btns=Array.from(document.querySelectorAll('button[aria-label]')).filter(function(b){"
                 "var al=b.getAttribute('aria-label')||'';"
-                "return /remove\\s*attachment|移除附件|删除附件|移除|删除/i.test(al);"
+                "return /remove\\s*attachment|移除附件|删除附件|移除|删除|gỡ\\s*file\\s*đính\\s*kèm/i.test(al);"
                 "});"
                 "btns.forEach(function(b){b.click();});"
                 "Array.from(document.querySelectorAll('input[type=\"file\"]')).forEach(function(inp){inp.value='';});"
@@ -1727,7 +1763,7 @@ class MuseEngine:
     })()"""
 
     _ATTACHED_COUNT_JS = "(function(){" + _COMPOSER_ROOTS_JS + """
-        var rx = /remove\\s*attachment|移除附件|删除附件/i;
+        var rx = /remove\\s*attachment|移除附件|删除附件|gỡ\\s*file\\s*đính\\s*kèm/i;
         var bubble = '[class*=chat-user-bubble], [class*="group/msg"], [class*=hatch-chat-groupable-bubble]';
         var roots = __composerRoots();
         for (var r of roots) {
@@ -1749,7 +1785,34 @@ class MuseEngine:
         self.page.send("DOM.setFileInputFiles",
                        {"files": paths, "objectId": object_id}, timeout=60)
 
-    def _attach_images(self, image_data: list[str]) -> dict | None:
+    def focus_thread(self, url: str) -> bool:
+        """Mở lại hội thoại đã đăng ảnh. Trả về False nếu trang không vào được."""
+        if not self.page or not url:
+            return False
+        target = url.split("?", 1)[0]
+        try:
+            current = self.page.js("location.href") or ""
+            if target and target in current and self.page.js("!!document.querySelector('textarea')"):
+                return True
+            self.page.send("Page.navigate", {"url": url})
+            deadline = time.time() + 12
+            while time.time() < deadline:
+                time.sleep(0.2)
+                href = self.page.js("location.href") or ""
+                ready = self.page.js("!!document.querySelector('textarea')")
+                if target in href and ready:
+                    return True
+        except Exception:
+            return False
+        return False
+
+    def page_url(self) -> str:
+        try:
+            return self.page.js("location.href") or ""
+        except Exception:
+            return ""
+
+    def _attach_images(self, image_data: list[str], clear: bool = True) -> dict | None:
         """逐个附加参考素材（图片/视频/音频/文档），并确认全部进入输入框。
 
         返回 {"dir": 临时目录, "hashes": 素材 sha256 集合}；调用方在生成结束后
@@ -1778,7 +1841,8 @@ class MuseEngine:
         if not files:
             return None
 
-        self._clear_attachments()
+        if clear:
+            self._clear_attachments()
         # Snap Chromium cannot read the host's /tmp; profile_dir is shared with it.
         os.makedirs(self.cfg.profile_dir, exist_ok=True)
         upload_dir = tempfile.mkdtemp(prefix="muse2api-refs-", dir=self.cfg.profile_dir)
@@ -1825,24 +1889,38 @@ class MuseEngine:
                  timeout: int = 240, expires: dict | None = None, account_id: str | None = None,
                  on_progress=None, reference_image: str | None = None,
                  reference_images: list[str] | None = None,
-                 stop_event=None) -> dict:
+                 stop_event=None, fresh_thread: bool = True,
+                 skip_hashes: set | None = None, claim_hash=None) -> dict:
+        with self._account_gen_lock(account_id, cookies):
+            return self._generate_unlocked(
+                cookies, prompt, expect, timeout, expires, account_id, on_progress,
+                reference_image, reference_images, stop_event, fresh_thread,
+                skip_hashes, claim_hash)
+
+    def _generate_unlocked(self, cookies, prompt, expect, timeout, expires, account_id,
+                           on_progress, reference_image, reference_images, stop_event,
+                           fresh_thread, skip_hashes, claim_hash) -> dict:
         deadline = time.monotonic() + timeout
         self.ensure_page(cookies, expires, account_id=account_id)
-        self.reset_thread(for_chat=False)
+        if fresh_thread:
+            self.reset_thread(for_chat=False)
         self._scroll_bottom()
         refs = list(reference_images or ([] if not reference_image else [reference_image]))
-        upload = self._attach_images(refs) if refs else None
-        if not refs:
+        upload = self._attach_images(refs, clear=fresh_thread) if refs else None
+        if fresh_thread and not refs:
             self._clear_attachments()
         try:
             return self._generate_attached(prompt, expect, deadline, on_progress,
-                                           stop_event, (upload or {}).get("hashes") or set())
+                                           stop_event, (upload or {}).get("hashes") or set(),
+                                           skip_hashes=skip_hashes, claim_hash=claim_hash)
         finally:
             if upload:
                 shutil.rmtree(upload["dir"], ignore_errors=True)
 
     def _generate_attached(self, prompt: str, expect: str, deadline: float,
-                           on_progress, stop_event, upload_hashes: set) -> dict:
+                           on_progress, stop_event, upload_hashes: set,
+                           skip_hashes: set | None = None, claim_hash=None) -> dict:
+        known_hashes = set(upload_hashes or ()) | set(skip_hashes or ())
         atts_before = self.attachments()
         baseline_sources = {a.get(k) for a in atts_before for k in ("src", "vSrc", "iSrc") if a.get(k)}
         base = atts_before[-1] if atts_before else {}
@@ -1852,11 +1930,17 @@ class MuseEngine:
             raise MuseGenerationError("任务准备超时，已停止发送")
         if self._send(prompt) not in ("clicked", "enter-sent"):
             raise MuseGenerationError("提示词发送未确认，已停止生成")
+        time.sleep(0.25)
+        self._scroll_bottom()
+        for att in self.attachments():
+            agent_idx = int(att.get("agentIdx") or 0)
+            if agent_idx and agent_idx <= base_agent_cnt:
+                baseline_sources |= {att.get(k) for k in ("src", "vSrc", "iSrc") if att.get(k)}
         os.makedirs(self.cfg.media_dir, exist_ok=True)
         # 页面若把刚上传的素材渲染成"结果"，按哈希识别出来并继续等待真正的成品
         while time.monotonic() < deadline:
             if stop_event is not None and stop_event.is_set():
-                raise MuseGenerationError("任务已取消")
+                raise MuseGenerationError("Đã hủy tác vụ")
             att = self._wait_attachment(
                 baseline_src, max(0, deadline - time.monotonic()), expect, on_progress=on_progress,
                 base_agent_cnt=base_agent_cnt, base_att_cnt=len(atts_before),
@@ -1873,21 +1957,29 @@ class MuseEngine:
             except Exception:  # noqa: BLE001
                 self._debug_dump("extract-fail")
 
-            if data and hashlib.sha256(data).hexdigest() in upload_hashes:
-                log.warning("命中的附件是本次上传的参考素材，忽略并继续等待: %s", selected_src[:80])
-                baseline_sources |= {att.get(k) for k in ("src", "vSrc", "iSrc") if att.get(k)}
-                time.sleep(0.1)
-                continue
+            def _reject_known(digest: str, reason: str) -> None:
+                log.warning("%s: %s", reason, selected_src[:80])
+                baseline_sources.update(att.get(k) for k in ("src", "vSrc", "iSrc") if att.get(k))
 
             if data:
+                digest = hashlib.sha256(data).hexdigest()
+                if digest in known_hashes:
+                    _reject_known(digest, "命中的附件是参考素材或已被其它任务占用")
+                    time.sleep(0.1)
+                    continue
                 ext = self._pick_ext(mime, url, expect)
+                kind = "video" if ext in (".mp4", ".webm", ".mov") else "image"
+                if expect == "video" and kind != "video":
+                    raise MuseGenerationError(f"期望生成视频，但提取成品类型为图片 ({ext})，拒绝以图片冒充视频交付")
+                if claim_hash and not claim_hash(digest):
+                    _reject_known(digest, "视频字节已被其它任务占用")
+                    known_hashes.add(digest)
+                    time.sleep(0.1)
+                    continue
                 name = f"{uuid.uuid4().hex}{ext}"
                 dst = os.path.join(self.cfg.media_dir, name)
                 with open(dst, "wb") as f:
                     f.write(data)
-                kind = "video" if ext in (".mp4", ".webm", ".mov") else "image"
-                if expect == "video" and kind != "video":
-                    raise MuseGenerationError(f"期望生成视频，但提取成品类型为图片 ({ext})，拒绝以图片冒充视频交付")
                 return {"path": dst, "filename": name, "size": len(data), "ext": ext, "mime": mime,
                         "kind": kind,
                         "via": "blob", "attachment": att.get("tid"),
@@ -1898,19 +1990,25 @@ class MuseEngine:
                 raise MuseGenerationError("已生成但未能取回文件")
             with open(path, "rb") as f:
                 digest = hashlib.sha256(f.read()).hexdigest()
-            if digest in upload_hashes:
+            if digest in known_hashes:
                 os.remove(path)
-                log.warning("下载到的文件是本次上传的参考素材，忽略并继续等待")
-                baseline_sources |= {att.get(k) for k in ("src", "vSrc", "iSrc") if att.get(k)}
+                _reject_known(digest, "下载到的文件是参考素材或已被其它任务占用")
                 time.sleep(0.1)
                 continue
             ext = os.path.splitext(path)[1].lower() or ".bin"
+            kind = "video" if ext in (".mp4", ".webm", ".mov") else "image"
+            if expect == "video" and kind != "video":
+                os.remove(path)
+                raise MuseGenerationError(f"期望生成视频，但下载成品类型为图片 ({ext})，拒绝以图片冒充视频交付")
+            if claim_hash and not claim_hash(digest):
+                os.remove(path)
+                _reject_known(digest, "视频字节已被其它 job nhận, bỏ qua")
+                known_hashes.add(digest)
+                time.sleep(0.1)
+                continue
             name = f"{uuid.uuid4().hex}{ext}"
             dst = os.path.join(self.cfg.media_dir, name)
             shutil.move(path, dst)
-            kind = "video" if ext in (".mp4", ".webm", ".mov") else "image"
-            if expect == "video" and kind != "video":
-                raise MuseGenerationError(f"期望生成视频，但下载成品类型为图片 ({ext})，拒绝以图片冒充视频交付")
             return {"path": dst, "filename": name, "size": os.path.getsize(dst), "ext": ext, "mime": "",
                     "kind": kind,
                     "via": "download", "attachment": att.get("tid"),

@@ -1,0 +1,167 @@
+name: Build & Release Muse Desktop (Nuitka)
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      build_target:
+        description: "Nền tảng build"
+        type: choice
+        options:
+          - "windows"
+          - "all"
+          - "macos"
+          - "linux"
+        default: "windows"
+      tag_name:
+        description: "Tên phiên bản Release (ví dụ: v1.7.0)"
+        required: false
+        default: "v1.7.0"
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    name: Build Windows (x86_64)
+    runs-on: windows-latest
+    if: github.event.inputs.build_target == '' || github.event.inputs.build_target == 'all' || github.event.inputs.build_target == 'windows'
+    steps:
+      - name: Checkout mã nguồn
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Cài đặt Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Cài đặt Python dependencies & Nuitka
+        run: |
+          python -m pip install --upgrade pip wheel setuptools
+          pip install -r requirements.txt
+          pip install -r requirements-desktop.txt
+          pip install nuitka zstandard
+
+      - name: Đóng gói bằng Nuitka (Windows)
+        run: |
+          python build_desktop.py --output-dir=dist
+
+      - name: Lưu trữ Artifact Windows
+        uses: actions/upload-artifact@v4
+        with:
+          name: MuseDesktop-windows
+          path: dist/*.zip
+          retention-days: 14
+
+  build-macos:
+    name: Build macOS
+    runs-on: macos-latest
+    if: github.event.inputs.build_target == 'all' || github.event.inputs.build_target == 'macos' || startsWith(github.ref, 'refs/tags/')
+    steps:
+      - name: Checkout mã nguồn
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Cài đặt Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Cài đặt Python dependencies & Nuitka
+        run: |
+          python -m pip install --upgrade pip wheel setuptools
+          pip install -r requirements.txt
+          pip install -r requirements-desktop.txt
+          pip install nuitka zstandard
+
+      - name: Đóng gói bằng Nuitka (macOS)
+        run: |
+          python build_desktop.py --output-dir=dist
+
+      - name: Lưu trữ Artifact macOS
+        uses: actions/upload-artifact@v4
+        with:
+          name: MuseDesktop-macos
+          path: dist/*.zip
+          retention-days: 14
+
+  build-linux:
+    name: Build Linux (x86_64)
+    runs-on: ubuntu-22.04
+    if: github.event.inputs.build_target == 'all' || github.event.inputs.build_target == 'linux' || startsWith(github.ref, 'refs/tags/')
+    steps:
+      - name: Checkout mã nguồn
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Cài đặt Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Cài đặt thư viện hệ thống
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgl1 libegl1 libxkbcommon-x11-0 libfontconfig1 libdbus-1-3
+
+      - name: Cài đặt Python dependencies & Nuitka
+        run: |
+          python -m pip install --upgrade pip wheel setuptools
+          pip install -r requirements.txt
+          pip install -r requirements-desktop.txt
+          pip install nuitka zstandard
+
+      - name: Đóng gói bằng Nuitka (Linux)
+        run: |
+          python build_desktop.py --output-dir=dist
+
+      - name: Lưu trữ Artifact Linux
+        uses: actions/upload-artifact@v4
+        with:
+          name: MuseDesktop-linux
+          path: dist/*.zip
+          retention-days: 14
+
+  release:
+    name: Phát hành GitHub Release
+    needs: [build-windows, build-macos, build-linux]
+    runs-on: ubuntu-latest
+    if: always() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && (startsWith(github.ref, 'refs/tags/') || github.event.inputs.tag_name != '')
+    steps:
+      - name: Checkout mã nguồn
+        uses: actions/checkout@v4
+
+      - name: Xác định Tag phát hành
+        id: get_tag
+        run: |
+          if [ -n "${{ github.event.inputs.tag_name }}" ]; then
+            echo "tag=${{ github.event.inputs.tag_name }}" >> $GITHUB_OUTPUT
+          else
+            echo "tag=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Tải về các file build
+        uses: actions/download-artifact@v4
+        with:
+          path: release_assets
+          pattern: MuseDesktop-*
+          merge-multiple: true
+
+      - name: Xuất bản GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.get_tag.outputs.tag }}
+          name: "Muse Desktop ${{ steps.get_tag.outputs.tag }}"
+          files: release_assets/*.zip
+          draft: false
+          prerelease: false
+          generate_release_notes: true

@@ -1,0 +1,15 @@
+{
+  "$schema": "../node_modules/wrangler/config-schema.json",
+  "name": "muse-auth",
+  "main": "src/index.js",
+  "compatibility_date": "2026-11-01",
+  "observability": { "enabled": true },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "muse-auth",
+      "database_id": "6537b40e-968a-43a4-b3df-f2b295fc0b1e",
+      "migrations_dir": "migrations"
+    }
+  ]
+}

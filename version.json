@@ -1,19 +1,19 @@
 {
-  "version": "1.6.9",
-  "updated_at": "2026-11-05",
-  "repo": "https://github.com/czg86389-hub/muse2api",
+  "version": "1.7.0",
+  "updated_at": "2026-11-23",
+  "repo": "https://github.com/huypv2002/muse2api",
   "highlights": [
-    "修复 1.6.8 代理检测结果未回写的问题：测试当前已保存的代理后，账号列表会更新为已连通、未通过或未测试。 升级后，对之前显示未确认的账号重新点一次“测试连通性”，即可写入实际结果。",
-    "先测试新链接再保存时，仅复用 5 分钟内、同账号、同节点及认证、同登录会话的服务端实测结果，避免刚测通过又显示未确认。",
-    "更换节点、密码或 Cookie、结果过期时不会继承旧成功；失败结果仍显示未通过，代理连通不等于账号浏览器或生成能力正常。",
-    "不同配置的临时测试继续不改已保存路线或账号健康；无检测记录显示“代理未测试”，不再被空记录误标为“代理未确认”。",
-    "更新服务后请强制刷新管理页。插件仍为 1.0.2、油猴脚本仍为 1.1.2；当前版本无需重装，旧插件需在每个浏览器个人资料中手动升级。"
+    "Hỗ trợ Nuitka standalone đóng gói đa nền tảng (Windows, macOS, Linux).",
+    "Tính năng tự động kiểm tra bản cập nhật mới trên GitHub Releases, tải về trong nền với thanh tiến trình.",
+    "Tự động đóng ứng dụng, cài đặt bản mới và khởi chạy lại mượt mà sau khi cập nhật.",
+    "Cơ chế retry & failover thông minh: tự động phân loại lỗi tạm thời và lỗi tài khoản, thử lại liên tục đến khi ra file video, hiển thị % tạo được theo thời gian thực.",
+    "Nút 'Tạo lại card lỗi' giúp người dùng chạy lại riêng các card chưa thành công mà không làm mất các card đã xong."
   ],
   "highlights_en": [
-    "Fix the 1.6.8 proxy-status regression: testing the currently saved proxy now updates the account-list connectivity result. After upgrading, retest accounts with old unconfirmed records once to persist an actual result.",
-    "When saving a newly tested URL, adopt only a server-observed result from the last five minutes for the same account, route, credentials and login session.",
-    "Changed routes, passwords or cookies and expired receipts never inherit success. Failed checks stay failed; proxy reachability does not prove browser or generation readiness.",
-    "Testing a different unsaved configuration still leaves the saved route and account health unchanged. Empty records display Proxy untested instead of Proxy unconfirmed.",
-    "Hard-refresh after updating. Extension remains 1.0.2 and userscript 1.1.2; current versions need no reinstall. Update older extensions manually in every browser profile."
+    "Nuitka standalone cross-platform build support (Windows, macOS, Linux).",
+    "Auto-updater checking GitHub Releases, background downloading with progress bar.",
+    "Seamless self-replacement, auto-restart upon update completion.",
+    "Smart retry & failover: categorizes transient vs account failures, retries until valid video file is produced, shows real-time success rate.",
+    "Retry Failed Cards button allows re-running failed items without losing finished clips."
   ]
 }
