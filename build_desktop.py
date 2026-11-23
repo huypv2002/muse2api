@@ -15,6 +15,15 @@ import subprocess
 import sys
 import zipfile
 
+# Ép UTF-8 cho stdout/stderr để tránh lỗi charmap cp1252 trên Windows CI / console
+try:
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
+
 ROOT = os.path.dirname(os.path.abspath(__file__))
 
 
@@ -29,11 +38,6 @@ def prepare_data_template(temp_data_dir: str):
     example_acc = os.path.join(ROOT, "data", "accounts.example.json")
     if os.path.isfile(example_acc):
         shutil.copy2(example_acc, os.path.join(temp_data_dir, "accounts.example.json"))
-        # Tạo sẵn accounts.json rỗng nếu chưa có
-        accounts_json = os.path.join(temp_data_dir, "accounts.json")
-        if not os.path.exists(accounts_json):
-            with open(accounts_json, "w", encoding="utf-8") as f:
-                f.write("[]")
     
     os.makedirs(os.path.join(temp_data_dir, "media"), exist_ok=True)
     os.makedirs(os.path.join(temp_data_dir, "downloads"), exist_ok=True)
@@ -127,6 +131,18 @@ def build(output_dir: str = "dist"):
     if not built_path:
         print(f"LỖI: Không tìm thấy sản phẩm build trong {output_dir_abs}")
         sys.exit(1)
+
+    # Đổi tên thư mục phân phối sang tên chuẩn MuseDesktop
+    target_folder_name = "MuseDesktop.app" if "darwin" in system else "MuseDesktop"
+    target_dist_path = os.path.join(output_dir_abs, target_folder_name)
+    if os.path.isdir(built_path) and os.path.abspath(built_path) != os.path.abspath(target_dist_path):
+        if os.path.exists(target_dist_path):
+            if os.path.isdir(target_dist_path):
+                shutil.rmtree(target_dist_path)
+            else:
+                os.remove(target_dist_path)
+        shutil.move(built_path, target_dist_path)
+        built_path = target_dist_path
 
     print(f"Build thành công: {built_path}")
 

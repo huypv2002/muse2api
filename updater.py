@@ -229,6 +229,16 @@ def apply_update_and_restart(update_file: str) -> None:
         except Exception:
             pass
 
+    # Bảo vệ dữ liệu cá nhân của người dùng (không ghi đè tài khoản, nhân vật, lịch sử, media)
+    for protected_file in ("accounts.json", "characters.json", "history.json", "tasks.json"):
+        existing_p = os.path.join(app_dir, "data", protected_file)
+        staged_p = os.path.join(staging_dir, "data", protected_file)
+        if os.path.exists(existing_p) and os.path.exists(staged_p):
+            try:
+                os.remove(staged_p)
+            except Exception:
+                pass
+
     if "windows" in system:
         _apply_and_restart_windows(staging_dir, app_dir, app_exe, current_script)
     elif "darwin" in system:
